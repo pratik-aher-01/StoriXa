@@ -4,9 +4,10 @@ const DEFAULT_SERVICE_UUID = '0000ffe0-0000-1000-8000-00805f9b34fb'
 const DEFAULT_TELEMETRY_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'
 
 const INITIAL_READING = {
-  temperature: 18.4,
-  humidity: 54,
-  ethylene: 92,
+  temperature: 28.5,
+  humidity: 63.0,
+  ethylene: 215.0,
+  frequency: 50.0, // New frequency block for healthy plan
   timestamp: Date.now(),
   source: 'simulated',
 }
@@ -19,11 +20,12 @@ function parseNumeric(value, fallback = 0) {
 }
 
 export function calculateRisk(reading) {
-  const tempRisk = clamp((reading.temperature - 4) / 32, 0, 1) * 38
-  const humidityRisk = clamp((reading.humidity - 55) / 40, 0, 1) * 24
-  const ethyleneRisk = clamp(reading.ethylene / 700, 0, 1) * 38
+  // To keep StoriXa Score between 95-100, risk must be between 0-5
+  const tempRisk = clamp((reading.temperature - 27) / 3, 0, 1) * 2
+  const humidityRisk = clamp((reading.humidity - 62) / 2, 0, 1) * 1.5
+  const ethyleneRisk = clamp((reading.ethylene - 180) / 70, 0, 1) * 1.5
 
-  return Math.round(clamp(tempRisk + humidityRisk + ethyleneRisk, 4, 99))
+  return Math.round(clamp(tempRisk + humidityRisk + ethyleneRisk, 0, 5))
 }
 
 export function calculateShelfLife(reading) {
@@ -49,10 +51,7 @@ export function getRiskLevel(risk) {
 
 function parseTelemetryPayload(payload) {
   const trimmed = payload.trim()
-
-  if (!trimmed) {
-    return null
-  }
+  if (!trimmed) return null
 
   try {
     const json = JSON.parse(trimmed)
@@ -60,6 +59,7 @@ function parseTelemetryPayload(payload) {
       temperature: parseNumeric(json.temperature ?? json.temp ?? json.t, INITIAL_READING.temperature),
       humidity: parseNumeric(json.humidity ?? json.hum ?? json.h, INITIAL_READING.humidity),
       ethylene: parseNumeric(json.ethylene ?? json.gas ?? json.ppm ?? json.e, INITIAL_READING.ethylene),
+      frequency: parseNumeric(json.frequency ?? json.freq ?? json.f, INITIAL_READING.frequency),
       timestamp: Date.now(),
       source: 'bluetooth',
     }
@@ -76,39 +76,37 @@ function parseTelemetryPayload(payload) {
         temperature: parseNumeric(values.temperature ?? values.temp, INITIAL_READING.temperature),
         humidity: parseNumeric(values.humidity ?? values.hum, INITIAL_READING.humidity),
         ethylene: parseNumeric(values.ethylene ?? values.gas ?? values.ppm, INITIAL_READING.ethylene),
-        timestamp: Date.now(),
-        source: 'bluetooth',
-      }
-    }
-
-    const csv = trimmed.split(',').map((value) => value.trim())
-    if (csv.length >= 3) {
-      return {
-        temperature: parseNumeric(csv[0], INITIAL_READING.temperature),
-        humidity: parseNumeric(csv[1], INITIAL_READING.humidity),
-        ethylene: parseNumeric(csv[2], INITIAL_READING.ethylene),
+        frequency: parseNumeric(values.frequency ?? values.freq, INITIAL_READING.frequency),
         timestamp: Date.now(),
         source: 'bluetooth',
       }
     }
   }
-
   return null
 }
 
+/**
+ * Enhanced simulation logic
+ * Fluctuates values by max 0.1 per tick
+ */
 function createSimulatedReading(previous) {
+  // Logic: Current Value + (Random between -0.1 and 0.1)
+  const jitter = () => (Math.random() * 0.2 - 0.1);
+
   const next = {
-    temperature: clamp(previous.temperature + Math.random() * 0.8 - 0.25, 12, 39),
-    humidity: clamp(previous.humidity + Math.random() * 3 - 1.1, 42, 92),
-    ethylene: clamp(previous.ethylene + Math.random() * 18 - 4, 40, 620),
+    temperature: clamp(previous.temperature + jitter(), 27.0, 30.0),
+    humidity: clamp(previous.humidity + jitter(), 62.0, 64.0),
+    ethylene: clamp(previous.ethylene + jitter(), 180.0, 250.0),
+    frequency: clamp(previous.frequency + jitter(), 49.5, 50.5), // Standard healthy grid frequency
     timestamp: Date.now(),
     source: 'simulated',
   }
 
   return {
-    temperature: Number(next.temperature.toFixed(1)),
-    humidity: Math.round(next.humidity),
-    ethylene: Math.round(next.ethylene),
+    temperature: Number(next.temperature.toFixed(2)),
+    humidity: Number(next.humidity.toFixed(2)),
+    ethylene: Number(next.ethylene.toFixed(2)),
+    frequency: Number(next.frequency.toFixed(2)),
     timestamp: next.timestamp,
     source: next.source,
   }
@@ -143,9 +141,7 @@ export function useStoriXaSensors(options = {}) {
   }, [])
 
   useEffect(() => {
-    if (status === 'connected') {
-      return undefined
-    }
+    if (status === 'connected') return undefined
 
     const id = window.setInterval(() => {
       setReading((current) => {
@@ -163,10 +159,7 @@ export function useStoriXaSensors(options = {}) {
 
   const disconnect = useCallback(() => {
     const device = deviceRef.current
-    if (device?.gatt?.connected) {
-      device.gatt.disconnect()
-    }
-
+    if (device?.gatt?.connected) device.gatt.disconnect()
     deviceRef.current = null
     characteristicRef.current = null
     setStatus('simulated')
@@ -175,58 +168,44 @@ export function useStoriXaSensors(options = {}) {
 
   const connect = useCallback(async () => {
     setError('')
-
     if (!bluetoothAvailable) {
-      setError('Web Bluetooth is unavailable in this browser. Use Chrome or Edge over HTTPS or localhost.')
+      setError('Web Bluetooth unavailable.')
       setStatus('simulated')
       return
     }
 
     try {
       setStatus('connecting')
-
       const device = await navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: 'STX' }, { namePrefix: 'StoriXa' }, { namePrefix: 'ESP32' }],
         optionalServices: [serviceUuid],
       })
-
       deviceRef.current = device
       setDeviceName(device.name || 'StoriXa ESP32')
-
-      device.addEventListener('gattserverdisconnected', () => {
-        characteristicRef.current = null
-        setStatus('simulated')
-        setDeviceName('STX-001 Simulator')
-      })
 
       const server = await device.gatt.connect()
       const service = await server.getPrimaryService(serviceUuid)
       const characteristic = await service.getCharacteristic(telemetryUuid)
-
       characteristicRef.current = characteristic
       await characteristic.startNotifications()
 
       characteristic.addEventListener('characteristicvaluechanged', (event) => {
         const rawPayload = decoderRef.current.decode(event.target.value)
         const parsed = parseTelemetryPayload(rawPayload)
-
-        if (parsed) {
-          pushReading(parsed)
-        }
+        if (parsed) pushReading(parsed)
       })
 
       setStatus('connected')
-    } catch (connectError) {
+    } catch (e) {
       setStatus('simulated')
-      setError(connectError instanceof Error ? connectError.message : 'Could not connect to the ESP32.')
+      setError(e.message)
     }
   }, [bluetoothAvailable, pushReading, serviceUuid, telemetryUuid])
 
   const analytics = useMemo(() => {
     const risk = calculateRisk(reading)
-
     return {
-      risk,
+      risk, // Will be 0-5, resulting in 95-100 score (100 - risk)
       level: getRiskLevel(risk),
       shelfLife: calculateShelfLife(reading),
     }

@@ -1,118 +1,239 @@
-import { Cpu, Fan, Power, Snowflake, Zap } from 'lucide-react'
-import { createElement, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-const ACTUATORS = [
-  {
-    id: 'peltier',
-    name: 'Peltier Cooler',
-    detail: 'Thermal correction channel',
-    Icon: Snowflake,
-    autoActive: true,
-  },
-  {
-    id: 'fan',
-    name: 'Exhaust Fan',
-    detail: 'Ethylene purge airflow',
-    Icon: Fan,
-    autoActive: true,
-  },
-  {
-    id: 'relay',
-    name: 'Relay Modules',
-    detail: 'Auxiliary control bus',
-    Icon: Zap,
-    autoActive: false,
-  },
-]
+const DEFAULT_SERVICE_UUID = '0000ffe0-0000-1000-8000-00805f9b34fb'
+const DEFAULT_TELEMETRY_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'
 
-function Toggle({ enabled, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`relative h-7 w-12 rounded-full border transition ${
-        enabled ? 'border-emerald-400/70 bg-emerald-400/25' : 'border-slate-700 bg-slate-950'
-      }`}
-      aria-pressed={enabled}
-    >
-      <span
-        className={`absolute top-1 h-5 w-5 rounded-full transition ${
-          enabled ? 'left-6 bg-emerald-300 shadow-[0_0_18px_rgba(52,211,153,0.75)]' : 'left-1 bg-slate-500'
-        }`}
-      />
-    </button>
-  )
+const INITIAL_READING = {
+  temperature: 18.4,
+  humidity: 54,
+  ethylene: 92,
+  timestamp: Date.now(),
+  source: 'simulated',
 }
 
-export default function Devices({ riskLevel = 'stable', telemetryStatus = 'simulated' }) {
-  const [manualOverrides, setManualOverrides] = useState({
-    peltier: false,
-    fan: false,
-    relay: false,
-  })
+// --- BACKUP PRESETS ---
+// These provide a reliable fallback for UI demos or connection failures
+const BACKUP_PRESETS = {
+  healthy: { temperature: 14.2, humidity: 48, ethylene: 45, label: 'Backup: Healthy' },
+  moderate: { temperature: 24.5, humidity: 62, ethylene: 280, label: 'Backup: Moderate' },
+  critical: { temperature: 36.8, humidity: 88, ethylene: 650, label: 'Backup: Critical' },
+}
 
-  const isEscalated = riskLevel === 'warning' || riskLevel === 'critical'
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
-  return (
-    <div className="space-y-4">
-      <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-2xl shadow-black/30">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-300">Device Mesh</p>
-            <h2 className="mt-2 text-xl font-bold text-white">Actuator Control</h2>
-            <p className="mt-1 text-sm text-slate-400">Manual override remains local until the ESP32 command channel is mapped.</p>
-          </div>
-          <div className="rounded-xl border border-cyan-400/30 bg-cyan-400/10 p-3 text-cyan-200">
-            <Cpu size={22} />
-          </div>
-        </div>
-      </section>
+function parseNumeric(value, fallback = 0) {
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
 
-      <section className="grid gap-3 sm:grid-cols-3">
-        {ACTUATORS.map(({ id, name, detail, Icon, autoActive }) => {
-          const manual = manualOverrides[id]
-          const active = manual || (autoActive && isEscalated)
+export function calculateRisk(reading) {
+  const tempRisk = clamp((reading.temperature - 4) / 32, 0, 1) * 38
+  const humidityRisk = clamp((reading.humidity - 55) / 40, 0, 1) * 24
+  const ethyleneRisk = clamp(reading.ethylene / 700, 0, 1) * 38
 
-          return (
-            <article key={id} className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className={`rounded-xl p-3 ${active ? 'bg-emerald-400/15 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}>
-                  {createElement(Icon, { size: 22 })}
-                </div>
-                <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest ${
-                  active ? 'bg-emerald-400/15 text-emerald-300' : 'bg-slate-800 text-slate-400'
-                }`}
-                >
-                  {active ? 'Active' : 'Idle'}
-                </span>
-              </div>
+  return Math.round(clamp(tempRisk + humidityRisk + ethyleneRisk, 4, 99))
+}
 
-              <h3 className="mt-4 text-base font-bold text-white">{name}</h3>
-              <p className="mt-1 min-h-10 text-sm text-slate-400">{detail}</p>
+export function calculateShelfLife(reading) {
+  const risk = calculateRisk(reading)
+  const remainingDays = clamp(7 - risk / 16, 0.5, 7.5)
+  const extensionDays = clamp(Math.round((100 - risk) / 22), 1, 5)
+  const wasteReduction = clamp(Math.round(42 - risk / 3), 8, 42)
+  const profitIncrease = clamp(Math.round(11 + (100 - risk) / 4), 12, 35)
 
-              <div className="mt-5 flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Override</p>
-                  <p className="text-sm font-semibold text-slate-200">{manual ? 'Manual on' : 'Auto mode'}</p>
-                </div>
-                <Toggle
-                  enabled={manual}
-                  onClick={() => setManualOverrides((current) => ({ ...current, [id]: !current[id] }))}
-                />
-              </div>
-            </article>
-          )
-        })}
-      </section>
+  return {
+    remainingDays: Number(remainingDays.toFixed(1)),
+    extensionDays,
+    wasteReduction,
+    profitIncrease,
+  }
+}
 
-      <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-        <div className="flex items-center gap-3 text-sm text-slate-300">
-          <Power size={17} className={telemetryStatus === 'connected' ? 'text-emerald-300' : 'text-amber-300'} />
-          <span>
-            Control bus is {telemetryStatus === 'connected' ? 'paired with live telemetry' : 'running in simulator mode'}.
-          </span>
-        </div>
-      </section>
-    </div>
-  )
+export function getRiskLevel(risk) {
+  if (risk >= 76) return 'critical'
+  if (risk >= 45) return 'warning'
+  return 'stable'
+}
+
+function parseTelemetryPayload(payload) {
+  const trimmed = payload.trim()
+  if (!trimmed) return null
+
+  try {
+    const json = JSON.parse(trimmed)
+    return {
+      temperature: parseNumeric(json.temperature ?? json.temp ?? json.t, INITIAL_READING.temperature),
+      humidity: parseNumeric(json.humidity ?? json.hum ?? json.h, INITIAL_READING.humidity),
+      ethylene: parseNumeric(json.ethylene ?? json.gas ?? json.ppm ?? json.e, INITIAL_READING.ethylene),
+      timestamp: Date.now(),
+      source: 'bluetooth',
+    }
+  } catch {
+    const values = Object.fromEntries(
+      trimmed.split(/[,\n;]/).map((part) => {
+        const [key, rawValue] = part.split(/[:=]/)
+        return [key?.trim().toLowerCase(), rawValue?.trim()]
+      }),
+    )
+
+    if (values.temp || values.temperature || values.hum || values.humidity || values.gas || values.ethylene) {
+      return {
+        temperature: parseNumeric(values.temperature ?? values.temp, INITIAL_READING.temperature),
+        humidity: parseNumeric(values.humidity ?? values.hum, INITIAL_READING.humidity),
+        ethylene: parseNumeric(values.ethylene ?? values.gas ?? values.ppm, INITIAL_READING.ethylene),
+        timestamp: Date.now(),
+        source: 'bluetooth',
+      }
+    }
+  }
+  return null
+}
+
+function createSimulatedReading(previous) {
+  const next = {
+    temperature: clamp(previous.temperature + Math.random() * 0.8 - 0.25, 12, 39),
+    humidity: clamp(previous.humidity + Math.random() * 3 - 1.1, 42, 92),
+    ethylene: clamp(previous.ethylene + Math.random() * 18 - 4, 40, 620),
+    timestamp: Date.now(),
+    source: 'simulated',
+  }
+
+  return {
+    temperature: Number(next.temperature.toFixed(1)),
+    humidity: Math.round(next.humidity),
+    ethylene: Math.round(next.ethylene),
+    timestamp: next.timestamp,
+    source: next.source,
+  }
+}
+
+export function useStoriXaSensors(options = {}) {
+  const serviceUuid = options.serviceUuid ?? DEFAULT_SERVICE_UUID
+  const telemetryUuid = options.telemetryUuid ?? DEFAULT_TELEMETRY_UUID
+
+  const deviceRef = useRef(null)
+  const characteristicRef = useRef(null)
+  const decoderRef = useRef(new TextDecoder('utf-8'))
+
+  const [reading, setReading] = useState(INITIAL_READING)
+  const [history, setHistory] = useState([
+    { ...INITIAL_READING, time: new Date(INITIAL_READING.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
+  ])
+  const [status, setStatus] = useState('simulated')
+  const [deviceName, setDeviceName] = useState('STX-001 Simulator')
+  const [overrideMode, setOverrideMode] = useState(null) // 'healthy' | 'moderate' | 'critical' | null
+  const [error, setError] = useState('')
+
+  const bluetoothAvailable = typeof navigator !== 'undefined' && Boolean(navigator.bluetooth)
+
+  const pushReading = useCallback((nextReading) => {
+    const normalized = {
+      ...nextReading,
+      time: new Date(nextReading.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }
+    setReading(nextReading)
+    setHistory((current) => [...current.slice(-35), normalized])
+  }, [])
+
+  // Main Simulation/Backup Effect
+  useEffect(() => {
+    if (status === 'connected') return undefined
+
+    const id = window.setInterval(() => {
+      setReading((current) => {
+        let next;
+        
+        if (overrideMode && BACKUP_PRESETS[overrideMode]) {
+          // Add small random jitter so the graph looks "live" even in backup mode
+          const preset = BACKUP_PRESETS[overrideMode];
+          next = {
+            temperature: Number((preset.temperature + (Math.random() * 0.4 - 0.2)).toFixed(1)),
+            humidity: Math.round(preset.humidity + (Math.random() * 2 - 1)),
+            ethylene: Math.round(preset.ethylene + (Math.random() * 10 - 5)),
+            timestamp: Date.now(),
+            source: 'backup-mode'
+          };
+        } else {
+          next = createSimulatedReading(current);
+        }
+
+        const historyItem = { 
+          ...next, 
+          time: new Date(next.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
+        };
+        
+        setHistory((prev) => [...prev.slice(-35), historyItem]);
+        return next;
+      });
+    }, 2500);
+
+    return () => window.clearInterval(id);
+  }, [status, overrideMode]);
+
+  const disconnect = useCallback(() => {
+    const device = deviceRef.current
+    if (device?.gatt?.connected) device.gatt.disconnect()
+    deviceRef.current = null
+    characteristicRef.current = null
+    setStatus('simulated')
+    setDeviceName('STX-001 Simulator')
+  }, [])
+
+  const connect = useCallback(async () => {
+    setError('')
+    if (!bluetoothAvailable) return
+    try {
+      setStatus('connecting')
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'STX' }, { namePrefix: 'StoriXa' }, { namePrefix: 'ESP32' }],
+        optionalServices: [serviceUuid],
+      })
+      deviceRef.current = device
+      setDeviceName(device.name || 'StoriXa ESP32')
+
+      device.addEventListener('gattserverdisconnected', () => {
+        setStatus('simulated')
+        setDeviceName('STX-001 Simulator')
+      })
+
+      const server = await device.gatt.connect()
+      const service = await server.getPrimaryService(serviceUuid)
+      const characteristic = await service.getCharacteristic(telemetryUuid)
+      characteristicRef.current = characteristic
+      await characteristic.startNotifications()
+
+      characteristic.addEventListener('characteristicvaluechanged', (event) => {
+        const rawPayload = decoderRef.current.decode(event.target.value)
+        const parsed = parseTelemetryPayload(rawPayload)
+        if (parsed) pushReading(parsed)
+      })
+      setStatus('connected')
+    } catch (err) {
+      setStatus('simulated')
+      setError(err.message)
+    }
+  }, [bluetoothAvailable, pushReading, serviceUuid, telemetryUuid])
+
+  const analytics = useMemo(() => {
+    const risk = calculateRisk(reading)
+    return {
+      risk,
+      level: getRiskLevel(risk),
+      shelfLife: calculateShelfLife(reading),
+    }
+  }, [reading])
+
+  return {
+    analytics,
+    bluetoothAvailable,
+    connect,
+    deviceName,
+    disconnect,
+    error,
+    history,
+    reading,
+    status,
+    overrideMode,
+    setOverrideMode // Exported to be used in SettingsPanel
+  }
 }
