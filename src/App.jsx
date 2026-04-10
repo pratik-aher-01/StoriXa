@@ -1,6 +1,6 @@
 import { createElement, useState } from 'react'
 import {
-  Activity, Bell, Bluetooth, ChartNoAxesCombined, CheckCircle2, Droplets,
+  Activity, Bell, Bluetooth, Camera, ChartNoAxesCombined, CheckCircle2, Droplets,
   Fan, Power, Settings, SlidersHorizontal, Snowflake,
   Thermometer, TriangleAlert, Wind, X, Zap
 } from 'lucide-react'
@@ -8,10 +8,12 @@ import {
   Area, AreaChart, CartesianGrid, Line, ResponsiveContainer,
   Tooltip, XAxis, YAxis
 } from 'recharts'
+import { analyzeFruitImage, deriveSnapshotUrl, normalizeCameraUrl } from './fruitClassifier'
 import { useStoriXaSensors } from './hooks/useStoriXaSensors'
 
 const modalTitles = {
   analytics: 'Environmental Analytics',
+  camera: 'ESP32 Camera Capture',
   devices: 'Active Edge Controls',
   alerts: 'System Intelligence',
   settings: 'Hardware Link',
@@ -235,6 +237,158 @@ function AnalyticsPanel({ history }) {
             <Line type="monotone" dataKey="temperature" name="Temp (°C)" stroke="#f59e0b" strokeWidth={3} dot={false} />
           </AreaChart>
         </ResponsiveContainer>
+      </div>
+    </div>
+  )
+}
+
+function CameraPanel({
+  cameraAnalysis,
+  cameraCaptureError,
+  cameraCaptureUrl,
+  cameraCapturing,
+  cameraDraftUrl,
+  cameraError,
+  cameraStreamUrl,
+  onCaptureCamera,
+  onCameraDraftChange,
+  onConnectCamera,
+  onDisconnectCamera,
+  readingTimestamp,
+}) {
+  const captureTime = readingTimestamp
+    ? new Intl.DateTimeFormat('en', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }).format(readingTimestamp)
+    : '--:--:--'
+  const streamConnected = Boolean(cameraStreamUrl)
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="overflow-hidden rounded-[2rem] border border-white/60 bg-white/55 shadow-sm backdrop-blur-xl">
+        <div className="flex items-center justify-between border-b border-white/50 px-5 py-4">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Vision Feed</p>
+            <h3 className="mt-1 text-xl font-black tracking-tight text-slate-800">ESP32 Camera Module</h3>
+          </div>
+          <div className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${
+            streamConnected ? 'bg-emerald-500/10 text-emerald-600' : 'bg-slate-200 text-slate-600'
+          }`}>
+            {streamConnected ? 'Connected' : 'Waiting'}
+          </div>
+        </div>
+
+        <div className="p-5">
+          <div className="mb-4 rounded-[1.5rem] bg-slate-100/80 p-4">
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Camera Address</p>
+            <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+              <input
+                type="text"
+                value={cameraDraftUrl}
+                onChange={(event) => onCameraDraftChange(event.target.value)}
+                placeholder="Enter IP or stream URL, e.g. 192.168.1.8:8080"
+                className="h-12 flex-1 rounded-full border border-white/70 bg-white px-4 text-sm font-semibold text-slate-700 outline-none transition focus:border-slate-300 focus:ring-2 focus:ring-slate-200"
+              />
+              <button
+                type="button"
+                onClick={streamConnected ? onDisconnectCamera : onConnectCamera}
+                className="h-12 rounded-full bg-slate-900 px-5 text-sm font-black text-white transition hover:scale-[1.01]"
+              >
+                {streamConnected ? 'Disconnect' : 'Connect'}
+              </button>
+            </div>
+            <p className="mt-2 text-xs font-medium text-slate-500">
+              Enter a full stream URL or just the IP address. If only the IP is given, `/video` is used automatically.
+            </p>
+            {cameraError && <p className="mt-2 text-xs font-bold text-rose-500">{cameraError}</p>}
+          </div>
+
+          <div className="relative flex aspect-[4/3] items-center justify-center overflow-hidden rounded-[1.75rem] bg-slate-900">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.2),transparent_55%),linear-gradient(135deg,rgba(15,23,42,0.95),rgba(30,41,59,0.9))]" />
+            {streamConnected ? (
+              <img
+                src={cameraStreamUrl}
+                alt="Camera feed"
+                className="relative z-10 h-full w-full object-cover"
+              />
+            ) : (
+              <div className="relative z-10 flex flex-col items-center gap-3 text-center text-white">
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/10">
+                  <Camera size={30} strokeWidth={2.2} />
+                </div>
+                <div>
+                  <p className="text-lg font-black">Camera capture slot</p>
+                  <p className="mt-1 max-w-xs text-sm text-slate-300">
+                    Paste the ESP32 or IP Webcam address above, then tap connect to start the feed.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={onCaptureCamera}
+            disabled={!streamConnected || cameraCapturing}
+            className={`mt-4 flex h-12 w-full items-center justify-center rounded-full text-sm font-black transition ${
+              !streamConnected || cameraCapturing
+                ? 'cursor-not-allowed bg-slate-300 text-slate-500'
+                : 'bg-emerald-500 text-white hover:scale-[1.01]'
+            }`}
+          >
+            {cameraCapturing ? 'Capturing...' : 'Capture Fruit'}
+          </button>
+
+          {cameraCaptureError && (
+            <p className="mt-3 text-sm font-bold text-rose-500">
+              {cameraCaptureError}
+            </p>
+          )}
+
+          {(cameraCaptureUrl || cameraAnalysis) && (
+            <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr_0.8fr]">
+              <div className="overflow-hidden rounded-[1.5rem] border border-white/70 bg-white/80">
+                <div className="border-b border-slate-100 px-4 py-3">
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Captured Frame</p>
+                </div>
+                <div className="aspect-[4/3] bg-slate-100">
+                  {cameraCaptureUrl ? (
+                    <img
+                      src={cameraCaptureUrl}
+                      alt="Captured fruit"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="rounded-[1.5rem] bg-slate-100/80 p-4">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Fruit Evaluation</p>
+                <p className="mt-3 text-2xl font-black text-slate-800">
+                  {cameraAnalysis?.fruit || 'Awaiting capture'}
+                </p>
+                <p className="mt-2 text-sm font-medium leading-6 text-slate-600">
+                  {cameraAnalysis?.note || 'Capture a frame to classify whether the fruit looks more like a lemon or an orange.'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="rounded-[1.25rem] bg-slate-100/80 p-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Capture Time</p>
+              <p className="mt-2 text-base font-black text-slate-800">{captureTime}</p>
+            </div>
+            <div className="rounded-[1.25rem] bg-slate-100/80 p-4">
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Source</p>
+              <p className="mt-2 text-base font-black text-slate-800">
+                {streamConnected ? cameraStreamUrl : 'No stream connected'}
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -508,6 +662,13 @@ function SettingsPanel({
 
 export default function App() {
   const [activeModal, setActiveModal] = useState(null)
+  const [cameraDraftUrl, setCameraDraftUrl] = useState('')
+  const [cameraStreamUrl, setCameraStreamUrl] = useState('')
+  const [cameraError, setCameraError] = useState('')
+  const [cameraCaptureUrl, setCameraCaptureUrl] = useState('')
+  const [cameraCaptureError, setCameraCaptureError] = useState('')
+  const [cameraAnalysis, setCameraAnalysis] = useState(null)
+  const [cameraCapturing, setCameraCapturing] = useState(false)
   const {
     analytics,
     bluetoothAvailable,
@@ -534,6 +695,51 @@ export default function App() {
     ? recentGaps.reduce((total, gap) => total + gap, 0) / recentGaps.length
     : 2500
   const sampleRateHz = (1000 / averageGap).toFixed(1)
+  const connectCamera = () => {
+    const nextUrl = normalizeCameraUrl(cameraDraftUrl)
+    if (!nextUrl) {
+      setCameraError('Enter the IP address or stream URL first.')
+      return
+    }
+
+    setCameraStreamUrl(nextUrl)
+    setCameraError('')
+  }
+
+  const disconnectCamera = () => {
+    setCameraStreamUrl('')
+    setCameraError('')
+    setCameraCaptureUrl('')
+    setCameraCaptureError('')
+    setCameraAnalysis(null)
+  }
+
+  const captureCameraFrame = async () => {
+    if (!cameraStreamUrl) {
+      setCameraCaptureError('Connect the camera feed before capturing.')
+      return
+    }
+
+    const snapshotUrl = deriveSnapshotUrl(cameraStreamUrl)
+
+    setCameraCapturing(true)
+    setCameraCaptureError('')
+
+    try {
+      const analysis = await analyzeFruitImage(snapshotUrl)
+      setCameraCaptureUrl(snapshotUrl)
+      setCameraAnalysis(analysis)
+    } catch (error) {
+      setCameraCaptureError(
+        error instanceof Error
+          ? `${error.message} If this is an IP camera feed, enable snapshot access or CORS on the device.`
+          : 'Capture failed.'
+      )
+      setCameraAnalysis(null)
+    } finally {
+      setCameraCapturing(false)
+    }
+  }
 
   // Format date and time dynamically from the sensor reading
   const dateStr = new Intl.DateTimeFormat('en', { weekday: 'short', month: 'short', day: 'numeric' }).format(readingTimestamp)
@@ -632,9 +838,10 @@ export default function App() {
       </div>
 
       {/* Floating Bottom Dock */}
-      <nav className="fixed bottom-6 left-1/2 z-30 flex w-[min(90vw,400px)] -translate-x-1/2 items-center justify-between rounded-full border border-white/40 bg-white/60 p-2 shadow-[0_20px_40px_rgba(0,0,0,0.1)] backdrop-blur-2xl">
+      <nav className="fixed bottom-6 left-1/2 z-30 flex w-[min(92vw,460px)] -translate-x-1/2 items-center justify-between rounded-full border border-white/40 bg-white/60 p-2 shadow-[0_20px_40px_rgba(0,0,0,0.1)] backdrop-blur-2xl">
         {[
           { mode: 'analytics', icon: ChartNoAxesCombined, label: 'Analytics' },
+          { mode: 'camera', icon: Camera, label: 'Camera' },
           { mode: 'devices', icon: SlidersHorizontal, label: 'Devices' },
           { mode: 'alerts', icon: Bell, label: 'Alerts' },
           { mode: 'settings', icon: Settings, label: 'Settings' },
@@ -655,6 +862,27 @@ export default function App() {
 
       <OverlayModal mode={activeModal} onClose={() => setActiveModal(null)} theme={theme}>
         {activeModal === 'analytics' && <AnalyticsPanel history={history} />}
+        {activeModal === 'camera' && (
+          <CameraPanel
+            cameraAnalysis={cameraAnalysis}
+            cameraCaptureError={cameraCaptureError}
+            cameraCaptureUrl={cameraCaptureUrl}
+            cameraCapturing={cameraCapturing}
+            cameraDraftUrl={cameraDraftUrl}
+            cameraError={cameraError}
+            cameraStreamUrl={cameraStreamUrl}
+            onCaptureCamera={captureCameraFrame}
+            onCameraDraftChange={(value) => {
+              setCameraDraftUrl(value)
+              if (cameraError) {
+                setCameraError('')
+              }
+            }}
+            onConnectCamera={connectCamera}
+            onDisconnectCamera={disconnectCamera}
+            readingTimestamp={readingTimestamp}
+          />
+        )}
         {activeModal === 'devices' && <DevicesPanel level={analytics.level} theme={theme} />}
         {activeModal === 'alerts' && <AlertsPanel level={analytics.level} message={theme.command} theme={theme} />}
         {activeModal === 'settings' && (
